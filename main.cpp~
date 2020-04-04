@@ -1,0 +1,6 @@
+#include <iostream>
+
+int main() {
+  cout<<"elo!\n';
+  std::cout<<"Piotreg jest super!!!!!\n";
+}
