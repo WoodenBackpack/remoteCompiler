@@ -6,6 +6,8 @@ import(
 	"net"
 	"os/exec"
 	"os"
+  "errors"
+  "bytes"
 )
 
 func getPortForListening() (net.PacketConn, error) {
@@ -36,43 +38,67 @@ const (
 	LOCAL_VLAN_SOCKET_ADDRESS string = "10.1.137.61:8001"
 )
 
-func createFileOfTypeFromBuffer(fType FileType, content []byte) (*os.File, error) {
-	var fileName string
+func createFilename(fType FileType) (string, error) {
+	var filename string
 	if (fType == CppFile) {
-		fileName = "main.cpp"
+		filename = "main.cpp"
 	} else if (fType == PythonFile) {
-		fileName = "main.py"
-	}
-	file, err := os.Create(fileName)
-	if err != nil {
-		fmt.Printf("cannot create file\n")
-		return nil, err
-	}
-	_, err = file.WriteString(string(content))
-	if err != nil {
-		fmt.Printf("cannot write to file\n")
-		return nil, err
-	}
-	return file, nil
+		filename = "main.py"
+	} else {
+    err := errors.New("Unrecognized FileType!")
+    return "", err
+  }
+  return filename, nil
 }
 
-func compileMainAndRun() (string) {
-	stdOut, errStr := exec.Command("g++", "-g", "main.cpp", "-oout").CombinedOutput()
-	var output string
-	if errStr != nil {
-		output += "compilation status:\n" + errStr.Error() + "\n"
-		output = "compilation errors:\n" + string(stdOut) + "\n"
-	} else {
-		output = "compilation success !\n"
+func createFileAndRun(fType FileType, content []byte) (string, string) {
+  filename, err := createFilename(fType)
+	if err != nil {
+		return "", err.Error()
 	}
-	execOut, errExecStr := exec.Command("./out").CombinedOutput()
-	if errStr == nil {
-	    //output += "Execution output:\n" + string(execOut) + "\n"
-	    gdbOut, _ := exec.Command("gdb", "-batch", "-ex", "run", "-ex", "bt", "./out").CombinedOutput()
-	    output += string(gdbOut)
+	file, err := os.Create(filename)
+	if err != nil {
+		fmt.Printf("cannot create file\n")
+		return "", err.Error()
+	}
+  strContent := string(bytes.Trim(content, "\x00"))
+	_, err = file.WriteString(strContent)
+	if err != nil {
+		fmt.Printf("cannot write to file\n")
+		return "", err.Error()
+	}
+  var stdOutput, errOutput string = "", ""
+	if (fType == CppFile) {
+	  stdOut, stdErr := exec.Command("g++", "-g", "main.cpp", "-oout").CombinedOutput()
+	  gdbOut, gdbErr := exec.Command("gdb", "-batch", "-ex", "run", "-ex", "bt", "./out").CombinedOutput()
+    stdOutput = string(stdOut) + "\n" + string(gdbOut) + "\n"
+    if (stdErr != nil) {
+      errOutput += stdErr.Error() + "\n"
+    }
+    if (gdbErr != nil) {
+      errOutput += gdbErr.Error() + "\n"
+    }
+    os.Remove("main.cpp")
+    os.Remove("out")
+	} else if (fType == PythonFile) {
+	  pyStdOut, pyStdErr := exec.Command("python", "main.py").CombinedOutput()
+    if (pyStdErr != nil) {
+      errOutput += pyStdErr.Error() + "\n"
+    }
+    stdOutput += string(pyStdOut) + "\n"
+    os.Remove("main.py")
+	}
+  file.Close()
+  return stdOutput, errOutput
+}
+
+func compileAndRun(fType FileType, content []byte) (string) {
+	stdOut, stdErr := createFileAndRun(fType, content)
+	var output string
+	if stdErr != "" {
+	    output += string(stdOut) + "\nERROR:\n" +string(stdErr)
 	} else {
-	    output += "Execution err output:\n" + errExecStr.Error() + "\n"
-	    output += "Execution output:\n" + string(execOut) + "\n"
+	    output += string(stdOut)
 	}
 	return output
 }
@@ -107,15 +133,14 @@ func main() {
       fmt.Printf("error with receiving packets: %s\n", err)
       return
     }
-    file, err := createFileOfTypeFromBuffer(CppFile, packet)
-    if err == nil {
-      output := compileMainAndRun()
-      sendResponseBack(addr, output)
+    isCpp := packet[0] == 1
+    var fileType FileType
+    if (isCpp) {
+      fileType = CppFile
     } else {
-      fmt.Printf("cant write to file err: %s", err)
+      fileType = PythonFile
     }
-    file.Close()
-    os.Remove("main.cpp")
-    os.Remove("out")
+    outputStr := compileAndRun(fileType, packet[1:len(packet) - 1])
+    sendResponseBack(addr, outputStr)
   }
 }
